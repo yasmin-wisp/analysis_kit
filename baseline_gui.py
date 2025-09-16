@@ -17,6 +17,26 @@ POLYNOM_ORDER = 3
 PALETTE = pc.qualitative.Plotly + pc.qualitative.D3 + pc.qualitative.Set3  # stable per-file colors
 
 # ==============================
+def load_data(spectrum_file):
+    # Read the file as CSV and get the spectrum and wavelength data
+    df = pd.read_csv(spectrum_file)
+    if "RamanIntensity" in df.columns: # wispsense
+        spectrum = df["RamanIntensity"].tolist()
+    elif "value" in df.columns: # grafana
+        spectrum = df["value"].tolist()
+    else:
+        print(f"\033[9No 'RamanIntensity' or 'value' column found in {spectrum_file}\033[0m")
+        return [], []
+    if "Wavelength" in df.columns: # wispsense
+        wavenumbers = df["Wavelength"].tolist()
+    elif "wavelength" in df.columns: # grafana
+        wavenumbers = df["wavelength"].tolist()
+    else:
+        print(f"\033[9No 'Wavelength' or 'wavelength' column found in {spectrum_file}\033[0m")
+        return [], []
+    return spectrum, wavenumbers
+
+# ==============================
 # Baseline reduction (ALS)
 # ==============================
 def baseline_reduction(y):
@@ -83,7 +103,7 @@ def detect_peaks(x, y, max_peaks=10, prom_ratio=0.02):
 # ==============================
 # I/O helpers
 # ==============================
-def load_data(file_like_or_path):
+def load_data_old(file_like_or_path):
     df = pd.read_csv(file_like_or_path)
     required = {"wavelength", "value"}
     if not required.issubset(df.columns):
