@@ -34,7 +34,7 @@ def load_data(spectrum_file):
     else:
         print(f"\033[9No 'Wavelength' or 'wavelength' column found in {spectrum_file}\033[0m")
         return [], []
-    return spectrum, wavenumbers
+    return wavenumbers, spectrum
 
 # ==============================
 # Baseline reduction (ALS)
