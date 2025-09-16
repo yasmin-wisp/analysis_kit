@@ -3,3 +3,5 @@ numpy
 pandas
 scipy
 plotly
+Pillow>=10.0,<11
+

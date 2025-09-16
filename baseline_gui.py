@@ -144,8 +144,31 @@ def parse_uploaded_file(uploaded_file):
 # ==============================
 # UI / State
 # ==============================
-st.set_page_config(page_title="Spectrum Baseline GUI", layout="wide")
-st.title("Spectrum Baseline Viewer")
+
+import io, base64
+from PIL import Image
+
+LOGO_PATH = "Small_Wisp_Logo_Blue_OuterGlow.png"   # <- put your logo file here
+
+@st.cache_data
+def load_logo_bytes(path: str = LOGO_PATH) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+# Load once for both favicon and page header
+_logo_bytes = load_logo_bytes()
+_logo_img = Image.open(io.BytesIO(_logo_bytes))
+
+# Use the logo as the browser tab icon
+st.set_page_config(page_title="Spectrum Baseline GUI", page_icon=_logo_img, layout="wide")
+
+# --- header with logo
+left, right = st.columns([1, 0.2], vertical_alignment="center")
+with left:
+    st.title("Spectrum Baseline Viewer")
+with right:
+    st.image(_logo_img, width=140)
+
 
 # --- init session state ---
 if "spectra" not in st.session_state:
@@ -170,7 +193,7 @@ if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0   # increment to reset the file_uploader widget
 
 st.write(
-    "Upload CSVs with columns **`wavelength`** and **`value`** or **`Wavelength`** and **`RamanIntensity`**. "
+    "Upload CSVs with columns **`wavelength`** and **`value`** or **`Wavelength`** and **`RamanIntensity`**. \n"
     "Toggle **Baseline-Reduced**, **Baseline**, and **Peaks (X)**. "
     "Click **✖** to remove a spectrum."
 )
