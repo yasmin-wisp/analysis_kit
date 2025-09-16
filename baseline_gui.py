@@ -170,7 +170,7 @@ if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0   # increment to reset the file_uploader widget
 
 st.write(
-    "Upload CSVs with columns **`wavelength`** and **`value`**. "
+    "Upload CSVs with columns **`wavelength`** and **`value`** or **`Wavelength`** and **`RamanIntensity`**. "
     "Toggle **Baseline-Reduced**, **Baseline**, and **Peaks (X)**. "
     "Click **✖** to remove a spectrum."
 )
