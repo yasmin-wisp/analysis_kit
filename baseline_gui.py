@@ -39,6 +39,13 @@ def load_data(spectrum_file):
 # ==============================
 # Baseline reduction (ALS)
 # ==============================
+def build_baselined_csv(wn_raw, y_raw) -> str:
+    # Compute processed spectrum
+    wn_pp, y_pp, _ = pre_process(wn_raw, y_raw)
+    # Save in the same schema you read: wavelength/value (lowercase)
+    df = pd.DataFrame({"wavelength": wn_pp, "value": y_pp})
+    return df.to_csv(index=False)
+
 def baseline_reduction(y):
     def baseline_als(y, lam, p, niter=100):
         y = np.asarray(y, dtype=float).ravel()
@@ -263,7 +270,9 @@ if st.session_state.spectra:
             npts = int(item["wn"].size)
             color = st.session_state.color_map.get(k, "#1f77b4")
 
-            col1, col2, col3 = st.columns([6, 1, 1])
+            # col1, col2, col3 = st.columns([6, 1, 1])
+            col1, col2, col3, col4 = st.columns([5, 1, 1, 2])
+
             with col1:
                 st.markdown(f"**{name}** · {npts} pts")
             with col2:
@@ -275,6 +284,21 @@ if st.session_state.spectra:
                 if st.button("✖", key=f"rm_{k}", help="Remove this spectrum", use_container_width=True):
                     st.session_state.pending_remove = k
                     st.rerun()  # quick visual feedback
+            with col4:
+                base, _ = os.path.splitext(name)
+                out_name = f"{base}_baselined.csv"
+                try:
+                    csv_str = build_baselined_csv(item["wn"], item["y"])
+                    st.download_button(
+                        "Save baselined CSV",
+                        data=csv_str,
+                        file_name=out_name,
+                        mime="text/csv",
+                        key=f"dl_{k}",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.caption(f"Baselined export unavailable: {e}")
 
 # --- plot ---
 if st.session_state.spectra:
