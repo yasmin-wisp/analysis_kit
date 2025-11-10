@@ -177,6 +177,8 @@ if "color_map" not in st.session_state:
     st.session_state.color_map = {}        # key -> color
 if "palette_idx" not in st.session_state:
     st.session_state.palette_idx = 0
+if "show_raw_traces" not in st.session_state:
+    st.session_state.show_raw_traces = True
 if "show_baselined_traces" not in st.session_state:
     st.session_state.show_baselined_traces = False
 if "show_baseline_traces" not in st.session_state:
@@ -199,34 +201,13 @@ st.write(
 )
 
 # --- controls ---
-c1, c2, c3, c4, c5, c6, c7 = st.columns([1,1,1,1,1,1,1])
-with c1:
-    if st.button("Show baselined spectrum", use_container_width=True):
-        st.session_state.show_baselined_traces = True
-with c2:
-    if st.button("Hide baselined spectrum", use_container_width=True):
-        st.session_state.show_baselined_traces = False
-with c3:
-    if st.button("Show the baseline", use_container_width=True):
-        st.session_state.show_baseline_traces = True
-with c4:
-    if st.button("Hide the baseline", use_container_width=True):
-        st.session_state.show_baseline_traces = False
-with c5:
-    if st.button("Show peaks (X)", use_container_width=True):
-        st.session_state.show_peaks = True
-with c6:
-    if st.button("Hide peaks", use_container_width=True):
-        st.session_state.show_peaks = False
-with c7:
-    if st.button("Clear all", use_container_width=True):
-        st.session_state.spectra = []
-        st.session_state.color_map = {}
-        st.session_state.palette_idx = 0
-        # also reset uploader so any selected files are cleared
-        st.session_state.uploader_version += 1
-        st.toast("Cleared all loaded spectra.")
-        st.rerun()
+# --- controls (replace the c1..c7 buttons block with this) ---
+with st.expander("Display options", expanded=True):
+    st.checkbox("Show original spectrum", key="show_raw_traces") #, value=st.session_state.get("show_raw_traces", True))
+    st.checkbox("Show baselined spectrum", key="show_baselined_traces", value=st.session_state.get("show_baselined_traces", False))
+    st.checkbox("Show baseline", key="show_baseline_traces", value=st.session_state.get("show_baseline_traces", False))
+    st.checkbox("Show peaks (X)", key="show_peaks", value=st.session_state.get("show_peaks", False))
+
 
 with st.expander("Peaks settings"):
     st.session_state.peaks_max = st.slider("Max peaks per spectrum", 1, 50, st.session_state.peaks_max, 1)
@@ -304,10 +285,11 @@ if st.session_state.spectra:
         color = st.session_state.color_map.get(k, "#1f77b4")
 
         # Raw
-        fig.add_trace(go.Scatter(
-            x=wn_raw, y=y_raw, name=f"{name} • Raw", mode="lines",
-            line=dict(color=color, width=2), opacity=1.0
-        ))
+        if st.session_state.show_raw_traces:
+            fig.add_trace(go.Scatter(
+                x=wn_raw, y=y_raw, name=f"{name} • Raw", mode="lines",
+                line=dict(color=color, width=2), opacity=1.0
+            ))
 
         # Compute processed if needed
         need_proc = st.session_state.show_baselined_traces or st.session_state.show_baseline_traces or st.session_state.show_peaks
