@@ -190,6 +190,8 @@ if "show_baselined_traces" not in st.session_state:
     st.session_state.show_baselined_traces = False
 if "show_baseline_traces" not in st.session_state:
     st.session_state.show_baseline_traces = False
+if "perform_savgol" not in st.session_state:
+    st.session_state.perform_savgol = False
 if "show_peaks" not in st.session_state:
     st.session_state.show_peaks = False
 if "peaks_max" not in st.session_state:
@@ -208,12 +210,12 @@ st.write(
 )
 
 # --- controls ---
-# --- controls (replace the c1..c7 buttons block with this) ---
 with st.expander("Display options", expanded=True):
     st.checkbox("Show original spectrum", key="show_raw_traces") #, value=st.session_state.get("show_raw_traces", True))
     st.checkbox("Show baselined spectrum", key="show_baselined_traces", value=st.session_state.get("show_baselined_traces", False))
     st.checkbox("Show baseline", key="show_baseline_traces", value=st.session_state.get("show_baseline_traces", False))
     st.checkbox("Show peaks (X)", key="show_peaks", value=st.session_state.get("show_peaks", False))
+    st.checkbox("Apply Savitzky-Golay smoothing", key="perform_savgol", value=st.session_state.get("perform_savgol", False))
 
 
 with st.expander("Peaks settings"):
@@ -323,10 +325,26 @@ if st.session_state.spectra:
 
         # Baselined (lighter)
         if st.session_state.show_baselined_traces and y_pp is not None:
+            if st.session_state.perform_savgol:
+                smooth_baselined_spectrum = savgol_filter(y_pp, 7, 3)
+                fig.add_trace(go.Scatter(
+                    x=wn_pp, y=smooth_baselined_spectrum, name=f"{name} • Baseline-Reduced (Smoothed)", mode="lines",
+                    line=dict(color=color, width=2), opacity=0.75
+                ))
+            else:
+                fig.add_trace(go.Scatter(
+                    x=wn_pp, y=y_pp, name=f"{name} • Baseline-Reduced", mode="lines",
+                    line=dict(color=color, width=2), opacity=0.55
+                ))
+
+        # Compute savgol smoothing if needed
+        if st.session_state.perform_savgol and not st.session_state.show_baselined_traces:
+            smooth_spectrum = savgol_filter(y_raw, 7, 3)
             fig.add_trace(go.Scatter(
-                x=wn_pp, y=y_pp, name=f"{name} • Baseline-Reduced", mode="lines",
-                line=dict(color=color, width=2), opacity=0.55
+                x=wn_raw, y=smooth_spectrum, name=f"{name} • Smoothed", mode="lines",
+                line=dict(color=color, width=2), opacity=0.75
             ))
+
 
         # Baseline (dashed)
         if st.session_state.show_baseline_traces and baseline is not None:
