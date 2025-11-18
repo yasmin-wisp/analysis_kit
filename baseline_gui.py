@@ -192,6 +192,8 @@ if "show_baseline_traces" not in st.session_state:
     st.session_state.show_baseline_traces = False
 if "perform_savgol" not in st.session_state:
     st.session_state.perform_savgol = False
+if "perform_minmax_normalization" not in st.session_state:
+    st.session_state.perform_minmax_normalization = False
 if "show_peaks" not in st.session_state:
     st.session_state.show_peaks = False
 if "peaks_max" not in st.session_state:
@@ -215,7 +217,8 @@ with st.expander("Display options", expanded=True):
     st.checkbox("Show baselined spectrum", key="show_baselined_traces", value=st.session_state.get("show_baselined_traces", False))
     st.checkbox("Show baseline", key="show_baseline_traces", value=st.session_state.get("show_baseline_traces", False))
     st.checkbox("Show peaks (X)", key="show_peaks", value=st.session_state.get("show_peaks", False))
-    st.checkbox("Apply Savitzky-Golay smoothing", key="perform_savgol", value=st.session_state.get("perform_savgol", False))
+    st.checkbox("Apply Savitzky-Golay smoothing (after baseline)", key="perform_savgol", value=st.session_state.get("perform_savgol", False))
+    st.checkbox("Apply Min-Max normalization (after baseline)", key="perform_minmax_normalization", value=st.session_state.get("perform_minmax_normalization", False))
 
 
 with st.expander("Peaks settings"):
@@ -325,6 +328,12 @@ if st.session_state.spectra:
 
         # Baselined (lighter)
         if st.session_state.show_baselined_traces and y_pp is not None:
+            # Normalization
+            if st.session_state.perform_minmax_normalization:
+                y_min = np.min(y_pp)
+                y_max = np.max(y_pp)
+                if y_max > y_min:
+                    y_pp = (y_pp - y_min) / (y_max - y_min)
             if st.session_state.perform_savgol:
                 smooth_baselined_spectrum = savgol_filter(y_pp, 7, 3)
                 fig.add_trace(go.Scatter(
