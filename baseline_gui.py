@@ -17,24 +17,116 @@ POLYNOM_ORDER = 3
 PALETTE = pc.qualitative.Plotly + pc.qualitative.D3 + pc.qualitative.Set3  # stable per-file colors
 
 # ==============================
+from typing import Tuple, Union, Optional
+from pathlib import Path
+
+def read_lightnovo_tsv(
+    tsv_path: Union[str, Path],
+    metadata_rows: int = 8,
+    return_df: bool = False
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Read ONE LightNovo TSV file and return:
+      spectrum_df : DataFrame with ['Wavelength','RamanIntensity'] OR 
+      > wn      : numpy array of wavenumbers
+      > spectra : numpy array of Raman intensities
+      metadata_df : DataFrame containing the first metadata_rows lines as-is
+    """
+
+    tsv_path = Path(tsv_path)
+    if not tsv_path.is_file():
+        raise FileNotFoundError(f"File not found: {tsv_path}")
+
+    # Read the entire raw TSV
+    df = pd.read_csv(tsv_path, sep="\t", header=None, dtype=str, engine="python")
+    if df.empty:
+        raise ValueError(f"Empty TSV file: {tsv_path}")
+
+    # --- Metadata (top rows) ---
+    metadata_raw = df.iloc[:metadata_rows, :2].copy()   # take only first two cols
+    metadata_raw = metadata_raw.reset_index(drop=True)
+
+    # Extract keys (column names) and values (row 0)
+    keys = metadata_raw.iloc[:, 0].astype(str).str.strip().tolist()
+    vals = metadata_raw.iloc[:, 1].astype(str).str.strip().tolist()
+
+    # Build one-row DataFrame where:
+    #   columns = metadata keys
+    #   row 0   = metadata values
+    meta_df = pd.DataFrame([vals], columns=keys)
+
+    # --- Spectrum (remaining rows) ---
+    if df.shape[0] <= metadata_rows or df.shape[1] < 2:
+        raise ValueError("No spectral data in this file")
+
+    spectra_data = df.iloc[metadata_rows:].copy()
+
+    if return_df:
+        spectrum_df = pd.DataFrame({
+            "Wavelength": pd.to_numeric(spectra_data.iloc[:, 0], errors="coerce"),
+            "RamanIntensity": pd.to_numeric(spectra_data.iloc[:, 1], errors="coerce")
+        }).dropna()
+
+        spectrum_df["Wavelength"] = spectrum_df["Wavelength"].astype(int)
+
+        return spectrum_df, meta_df
+    wn = pd.to_numeric(spectra_data.iloc[:, 0], errors="coerce").dropna().to_numpy(dtype=float)
+    spectra = pd.to_numeric(spectra_data.iloc[:, 1], errors="coerce").dropna().to_numpy(dtype=float)
+
+    return wn, spectra, meta_df
+
+from pathlib import Path
+
 def load_data(spectrum_file):
-    # Read the file as CSV and get the spectrum and wavelength data
-    df = pd.read_csv(spectrum_file)
-    if "RamanIntensity" in df.columns: # wispsense
+    path = Path(spectrum_file)
+    ext = path.suffix.lower()
+
+    if ext == ".tsv":
+        df = read_lightnovo_tsv(path, return_df=True)[0]
+    else:
+        df = pd.read_csv(path)  # standard CSV
+
+    if "RamanIntensity" in df.columns:       # wispsense
         spectrum = df["RamanIntensity"].tolist()
-    elif "value" in df.columns: # grafana
+    elif "value" in df.columns:              # grafana
         spectrum = df["value"].tolist()
     else:
         print(f"\033[9No 'RamanIntensity' or 'value' column found in {spectrum_file}\033[0m")
         return [], []
-    if "Wavelength" in df.columns: # wispsense
+
+    if "Wavelength" in df.columns:
         wavenumbers = df["Wavelength"].tolist()
-    elif "wavelength" in df.columns: # grafana
+    elif "wavelength" in df.columns:
         wavenumbers = df["wavelength"].tolist()
     else:
         print(f"\033[9No 'Wavelength' or 'wavelength' column found in {spectrum_file}\033[0m")
         return [], []
+
     return wavenumbers, spectrum
+
+
+# def load_data(spectrum_file):
+#     # Read the file as CSV and get the spectrum and wavelength data
+#     if spectrum_file.endswith(".tsv"):
+#         df, meta = read_lightnovo_tsv(spectrum_file, return_df=True)
+#         return read_lightnovo_tsv(spectrum_file)[:2]
+#     else:
+#         df = pd.read_csv(spectrum_file)
+#     if "RamanIntensity" in df.columns: # wispsense
+#         spectrum = df["RamanIntensity"].tolist()
+#     elif "value" in df.columns: # grafana
+#         spectrum = df["value"].tolist()
+#     else:
+#         print(f"\033[9No 'RamanIntensity' or 'value' column found in {spectrum_file}\033[0m")
+#         return [], []
+#     if "Wavelength" in df.columns: # wispsense
+#         wavenumbers = df["Wavelength"].tolist()
+#     elif "wavelength" in df.columns: # grafana
+#         wavenumbers = df["wavelength"].tolist()
+#     else:
+#         print(f"\033[9No 'Wavelength' or 'wavelength' column found in {spectrum_file}\033[0m")
+#         return [], []
+#     return wavenumbers, spectrum
 
 # ==============================
 # Baseline reduction (ALS)
@@ -130,15 +222,13 @@ def file_key(uploaded_file) -> str:
 
 def parse_uploaded_file(uploaded_file):
     name = getattr(uploaded_file, "name", "Spectrum")
-    try:
-        uploaded_file.seek(0)
-        wn, y = load_data(uploaded_file)
-        return name, np.asarray(wn, float), np.asarray(y, float)
-    except Exception:
-        pass
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+    _, ext = os.path.splitext(name)  # ".csv" or ".tsv"
+
+    # Always write to temp with the same suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         tmp.write(uploaded_file.getbuffer())
         path = tmp.name
+
     try:
         wn, y = load_data(path)
         return name, np.asarray(wn, float), np.asarray(y, float)
@@ -147,6 +237,27 @@ def parse_uploaded_file(uploaded_file):
             os.remove(path)
         except Exception:
             pass
+
+
+# def parse_uploaded_file(uploaded_file):
+#     name = getattr(uploaded_file, "name", "Spectrum")
+#     try:
+#         uploaded_file.seek(0)
+#         wn, y = load_data(uploaded_file)
+#         return name, np.asarray(wn, float), np.asarray(y, float)
+#     except Exception:
+#         pass
+#     with tempfile.NamedTemporaryFile(delete=False) as tmp:
+#         tmp.write(uploaded_file.getbuffer())
+#         path = tmp.name
+#     try:
+#         wn, y = load_data(path)
+#         return name, np.asarray(wn, float), np.asarray(y, float)
+#     finally:
+#         try:
+#             os.remove(path)
+#         except Exception:
+#             pass
 
 # ==============================
 # UI / State
@@ -206,7 +317,7 @@ if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0   # increment to reset the file_uploader widget
 
 st.write(
-    "Upload CSVs with columns **`wavelength`** and **`value`** or **`Wavelength`** and **`RamanIntensity`**. \n"
+    "Upload TSV or CSVs with columns **`wavelength`** and **`value`** or **`Wavelength`** and **`RamanIntensity`**. \n"
     "Toggle **Baseline-Reduced**, **Baseline**, and **Peaks (X)**. "
     "Click **✖** to remove a spectrum."
 )
@@ -243,7 +354,7 @@ if rk:
 # --- uploader (incremental add) ---
 new_files = st.file_uploader(
     "Upload spectrum file(s)",
-    type=["csv"],
+    type=["csv", "tsv"],
     label_visibility="visible",
     accept_multiple_files=True,
     key=f"uploader_{st.session_state.uploader_version}"   # 👈 changes on delete/clear
