@@ -185,7 +185,7 @@ def pre_process(wavenumbers, spectrum):
     win = min(WINDOW_SIZE if WINDOW_SIZE % 2 == 1 else WINDOW_SIZE + 1,
               N if N % 2 == 1 else N - 1)
     win = max(3, win)
-    poly = min(POLYNOM_ORDER, win - 1)
+    poly = POLYNOM_ORDER
 
     smooth = savgol_filter(baselined, window_length=win, polyorder=poly, mode="interp")
     return w, smooth, baseline
