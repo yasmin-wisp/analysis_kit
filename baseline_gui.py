@@ -90,19 +90,37 @@ def load_data(spectrum_file):
         spectrum = df["RamanIntensity"].tolist()
     elif "value" in df.columns:              # grafana
         spectrum = df["value"].tolist()
+    elif "avg_main_normalized" in df.columns:
+        spectrum = df["avg_main_normalized"].tolist()
+    elif "avg_main" in df.columns:
+        spectrum = df["avg_main"].tolist()
     else:
-        print(f"\033[9No 'RamanIntensity' or 'value' column found in {spectrum_file}\033[0m")
+        print(f"\033[9No 'RamanIntensity' or 'value' or 'avg_main' column found in {spectrum_file}\033[0m")
         return [], []
 
     if "Wavelength" in df.columns:
         wavenumbers = df["Wavelength"].tolist()
     elif "wavelength" in df.columns:
         wavenumbers = df["wavelength"].tolist()
+    elif "raman_shift_cm-1" in df.columns:
+        wavenumbers = df["raman_shift_cm-1"].tolist()
     else:
-        print(f"\033[9No 'Wavelength' or 'wavelength' column found in {spectrum_file}\033[0m")
+        print(f"\033[9No 'Wavelength' or 'wavelength' or 'raman_shift_cm-1' column found in {spectrum_file}\033[0m")
         return [], []
 
-    return wavenumbers, spectrum
+    # Check for reference spectrum
+    reference = None
+    if "avg_ref_raw" in df.columns:
+        reference = df["avg_ref_raw"].tolist()
+    elif "avg_ref" in df.columns:
+        reference = df["avg_ref"].tolist()
+
+    # Check for raw spectrum
+    raw = None
+    if "avg_main_raw" in df.columns:
+        raw = df["avg_main_raw"].tolist()
+
+    return wavenumbers, spectrum, reference, raw
 
 
 # def load_data(spectrum_file):
@@ -202,14 +220,14 @@ def detect_peaks(x, y, max_peaks=10, prom_ratio=0.02):
 # ==============================
 # I/O helpers
 # ==============================
-def load_data_old(file_like_or_path):
-    df = pd.read_csv(file_like_or_path)
-    required = {"wavelength", "value"}
-    if not required.issubset(df.columns):
-        raise ValueError(f"CSV must have columns {required}, found {set(df.columns)}")
-    wn = df["wavelength"].to_numpy(dtype=float)
-    spectrum = df["value"].to_numpy(dtype=float)
-    return wn, spectrum
+# def load_data_old(file_like_or_path):
+#     df = pd.read_csv(file_like_or_path)
+#     required = {"wavelength", "value"}
+#     if not required.issubset(df.columns):
+#         raise ValueError(f"CSV must have columns {required}, found {set(df.columns)}")
+#     wn = df["wavelength"].to_numpy(dtype=float)
+#     spectrum = df["value"].to_numpy(dtype=float)
+#     return wn, spectrum
 
 def file_key(uploaded_file) -> str:
     name = getattr(uploaded_file, "name", "unknown")
@@ -230,8 +248,8 @@ def parse_uploaded_file(uploaded_file):
         path = tmp.name
 
     try:
-        wn, y = load_data(path)
-        return name, np.asarray(wn, float), np.asarray(y, float)
+        wn, y, ref, raw = load_data(path)
+        return name, np.asarray(wn, float), np.asarray(y, float), np.asarray(ref, float) if ref is not None else None, np.asarray(raw, float) if raw is not None else None
     finally:
         try:
             os.remove(path)
@@ -311,13 +329,17 @@ if "peaks_max" not in st.session_state:
     st.session_state.peaks_max = 10
 if "peaks_prom_ratio" not in st.session_state:
     st.session_state.peaks_prom_ratio = 0.02
+if "show_reference" not in st.session_state:
+    st.session_state.show_reference = False
+if "show_raw" not in st.session_state:
+    st.session_state.show_raw = False
 if "pending_remove" not in st.session_state:
     st.session_state.pending_remove = None
 if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0   # increment to reset the file_uploader widget
 
 st.write(
-    "Upload TSV or CSVs with columns **`wavelength`** and **`value`** or **`Wavelength`** and **`RamanIntensity`**. \n"
+    "Upload TSV or CSVs with columns **`wavelength`** or **`Wavelength`** or **`raman_shift_cm-1`** AND **`value`** or **`RamanIntensity`** or **`avg_main`**. \n"
     "Toggle **Baseline-Reduced**, **Baseline**, and **Peaks (X)**. "
     "Click **✖** to remove a spectrum."
 )
@@ -330,6 +352,20 @@ with st.expander("Display options", expanded=True):
     st.checkbox("Show peaks (X)", key="show_peaks", value=st.session_state.get("show_peaks", False))
     st.checkbox("Apply Savitzky-Golay smoothing (after baseline)", key="perform_savgol", value=st.session_state.get("perform_savgol", False))
     st.checkbox("Apply Min-Max normalization (after baseline)", key="perform_minmax_normalization", value=st.session_state.get("perform_minmax_normalization", False))
+    show_ref_checkbox = st.checkbox("Show reference spectrum", key="show_reference", value=st.session_state.get("show_reference", False))
+    show_raw_checkbox = st.checkbox("Show raw spectrum", key="show_raw", value=st.session_state.get("show_raw", False))
+
+    # Note about reference availability
+    if show_ref_checkbox and st.session_state.spectra:
+        has_reference = any(item.get("ref") is not None for item in st.session_state.spectra)
+        if not has_reference:
+            st.caption("⚠️ Reference does not exist in the loaded files")
+
+    # Note about raw availability
+    if show_raw_checkbox and st.session_state.spectra:
+        has_raw = any(item.get("raw") is not None for item in st.session_state.spectra)
+        if not has_raw:
+            st.caption("⚠️ Raw does not exist in the loaded files")
 
 
 with st.expander("Peaks settings"):
@@ -369,8 +405,8 @@ if new_files:
             k = file_key(uf)
             if k in existing_keys:
                 continue
-            name, wn_raw, y_raw = parse_uploaded_file(uf)
-            st.session_state.spectra.append({"key": k, "name": name, "wn": wn_raw, "y": y_raw})
+            name, wn_raw, y_raw, ref_raw, raw_raw = parse_uploaded_file(uf)
+            st.session_state.spectra.append({"key": k, "name": name, "wn": wn_raw, "y": y_raw, "ref": ref_raw, "raw": raw_raw})
             if k not in st.session_state.color_map:
                 color = PALETTE[st.session_state.palette_idx % len(PALETTE)]
                 st.session_state.color_map[k] = color
@@ -421,14 +457,28 @@ if st.session_state.spectra:
     fig = go.Figure()
     for item in st.session_state.spectra:
         k = item["key"]; name = item["name"]
-        wn_raw = item["wn"]; y_raw = item["y"]
+        wn_raw = item["wn"]; y_raw = item["y"]; ref_raw = item.get("ref"); raw_raw = item.get("raw")
         color = st.session_state.color_map.get(k, "#1f77b4")
 
         # Raw
         if st.session_state.show_raw_traces:
             fig.add_trace(go.Scatter(
-                x=wn_raw, y=y_raw, name=f"{name} • Raw", mode="lines",
+                x=wn_raw, y=y_raw, name=name, mode="lines",
                 line=dict(color=color, width=2), opacity=1.0
+            ))
+
+        # Reference spectrum
+        if st.session_state.show_reference and ref_raw is not None:
+            fig.add_trace(go.Scatter(
+                x=wn_raw, y=ref_raw, name=f"{name} • Reference", mode="lines",
+                line=dict(color=color, dash="dot", width=2), opacity=0.8
+            ))
+
+        # Raw spectrum
+        if st.session_state.show_raw and raw_raw is not None:
+            fig.add_trace(go.Scatter(
+                x=wn_raw, y=raw_raw, name=f"{name} • Raw", mode="lines",
+                line=dict(color=color, dash="dashdot", width=2), opacity=0.7
             ))
 
         # Compute processed if needed
