@@ -225,10 +225,10 @@ def pre_process(wavenumbers, spectrum):
     baselined, baseline = baseline_reduction(y)
 
     N = baselined.size
-    win = min(WINDOW_SIZE if WINDOW_SIZE % 2 == 1 else WINDOW_SIZE + 1,
-              N if N % 2 == 1 else N - 1)
-    win = max(3, win)
-    poly = POLYNOM_ORDER
+    # Use configurable Savitzky-Golay parameters
+    win = min(st.session_state.savgol_window, N if N % 2 == 1 else N - 1)
+    win = max(3, win)  # Ensure minimum window size
+    poly = min(st.session_state.savgol_polyorder, win - 1)  # Ensure poly < win
 
     smooth = savgol_filter(baselined, window_length=win, polyorder=poly, mode="interp")
     return w, smooth, baseline
@@ -376,6 +376,10 @@ if "show_reference" not in st.session_state:
     st.session_state.show_reference = False
 if "show_raw" not in st.session_state:
     st.session_state.show_raw = False
+if "savgol_window" not in st.session_state:
+    st.session_state.savgol_window = 7
+if "savgol_polyorder" not in st.session_state:
+    st.session_state.savgol_polyorder = 3
 if "pending_remove" not in st.session_state:
     st.session_state.pending_remove = None
 if "uploader_version" not in st.session_state:
@@ -411,11 +415,21 @@ with st.expander("Display options", expanded=True):
             st.caption("⚠️ Raw does not exist in the loaded files")
 
 
-with st.expander("Peaks settings"):
+with st.expander("Processing settings"):
     st.session_state.peaks_max = st.slider("Max peaks per spectrum", 1, 50, st.session_state.peaks_max, 1)
     st.session_state.peaks_prom_ratio = st.slider(
         "Prominence ratio (relative to signal range)", 0.001, 0.2,
         float(st.session_state.peaks_prom_ratio), 0.001
+    )
+
+    st.markdown("**Savitzky-Golay smoothing:**")
+    st.session_state.savgol_window = st.slider(
+        "Window length (must be odd)", 3, 51, st.session_state.savgol_window, 2,
+        help="Window length for Savitzky-Golay smoothing. Must be odd and >= 3."
+    )
+    st.session_state.savgol_polyorder = st.slider(
+        "Polynomial order", 1, 10, st.session_state.savgol_polyorder, 1,
+        help="Polynomial order for Savitzky-Golay smoothing. Must be < window length."
     )
 
 st.markdown("---")
@@ -542,7 +556,11 @@ if st.session_state.spectra:
                 if y_max > y_min:
                     y_pp = (y_pp - y_min) / (y_max - y_min)
             if st.session_state.perform_savgol:
-                smooth_baselined_spectrum = savgol_filter(y_pp, 7, 3)
+                N_pp = len(y_pp)
+                win_pp = min(st.session_state.savgol_window, N_pp if N_pp % 2 == 1 else N_pp - 1)
+                win_pp = max(3, win_pp)
+                poly_pp = min(st.session_state.savgol_polyorder, win_pp - 1)
+                smooth_baselined_spectrum = savgol_filter(y_pp, win_pp, poly_pp)
                 fig.add_trace(go.Scatter(
                     x=wn_pp, y=smooth_baselined_spectrum, name=f"{name} • Baseline-Reduced (Smoothed)", mode="lines",
                     line=dict(color=color, width=2), opacity=0.75
@@ -555,7 +573,11 @@ if st.session_state.spectra:
 
         # Compute savgol smoothing if needed
         if st.session_state.perform_savgol and not st.session_state.show_baselined_traces:
-            smooth_spectrum = savgol_filter(y_raw, 7, 3)
+            N_raw = len(y_raw)
+            win_raw = min(st.session_state.savgol_window, N_raw if N_raw % 2 == 1 else N_raw - 1)
+            win_raw = max(3, win_raw)
+            poly_raw = min(st.session_state.savgol_polyorder, win_raw - 1)
+            smooth_spectrum = savgol_filter(y_raw, win_raw, poly_raw)
             fig.add_trace(go.Scatter(
                 x=wn_raw, y=smooth_spectrum, name=f"{name} • Smoothed", mode="lines",
                 line=dict(color=color, width=2), opacity=0.75
