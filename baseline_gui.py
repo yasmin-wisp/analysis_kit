@@ -20,6 +20,48 @@ PALETTE = pc.qualitative.Plotly + pc.qualitative.D3 + pc.qualitative.Set3  # sta
 from typing import Tuple, Union, Optional
 from pathlib import Path
 
+def handle_nan_values(spectrum):
+    """
+    Handle NaN values in spectrum by extrapolation and interpolation.
+
+    Args:
+        spectrum: Input spectrum array that may contain NaN values
+
+    Returns:
+        spectrum: Spectrum with NaN values replaced by extrapolated/interpolated values
+    """
+    spectrum = spectrum.copy()
+    if np.any(np.isnan(spectrum)):
+        # Find valid (non-NaN) indices
+        valid_mask = ~np.isnan(spectrum)
+        if np.any(valid_mask):
+            # For NaN values at the beginning, extrapolate from the first valid value
+            first_valid_idx = np.argmax(valid_mask)  # Index of first non-NaN
+            if first_valid_idx > 0:
+                # Extrapolate backwards from the first valid value
+                first_valid_value = spectrum[first_valid_idx]
+                spectrum[:first_valid_idx] = first_valid_value
+
+            # For any remaining NaN values, interpolate using surrounding values
+            nan_mask = np.isnan(spectrum)
+            if np.any(nan_mask):
+                # Get indices of valid and NaN points
+                valid_indices = np.where(~nan_mask)[0]
+                nan_indices = np.where(nan_mask)[0]
+
+                if len(valid_indices) >= 2:
+                    # Interpolate NaN values using linear interpolation
+                    spectrum[nan_mask] = np.interp(nan_indices, valid_indices, spectrum[valid_indices])
+                else:
+                    # If not enough valid points for interpolation, use the mean of valid values
+                    mean_value = np.mean(spectrum[valid_indices]) if len(valid_indices) > 0 else 0.0
+                    spectrum[nan_mask] = mean_value
+        else:
+            # If entire spectrum is NaN, fill with 0
+            spectrum[:] = 0.0
+
+    return spectrum
+
 def read_lightnovo_tsv(
     tsv_path: Union[str, Path],
     metadata_rows: int = 8,
@@ -87,13 +129,13 @@ def load_data(spectrum_file):
         df = pd.read_csv(path)  # standard CSV
 
     if "RamanIntensity" in df.columns:       # wispsense
-        spectrum = df["RamanIntensity"].tolist()
+        spectrum = handle_nan_values(df["RamanIntensity"].to_numpy()).tolist()
     elif "value" in df.columns:              # grafana
-        spectrum = df["value"].tolist()
+        spectrum = handle_nan_values(df["value"].to_numpy()).tolist()
     elif "avg_main_normalized" in df.columns:
-        spectrum = df["avg_main_normalized"].tolist()
+        spectrum = handle_nan_values(df["avg_main_normalized"].to_numpy()).tolist()
     elif "avg_main" in df.columns:
-        spectrum = df["avg_main"].tolist()
+        spectrum = handle_nan_values(df["avg_main"].to_numpy()).tolist()
     else:
         print(f"\033[9No 'RamanIntensity' or 'value' or 'avg_main' column found in {spectrum_file}\033[0m")
         return [], []
@@ -111,14 +153,14 @@ def load_data(spectrum_file):
     # Check for reference spectrum
     reference = None
     if "avg_ref_raw" in df.columns:
-        reference = df["avg_ref_raw"].tolist()
+        reference = handle_nan_values(df["avg_ref_raw"].to_numpy()).tolist()
     elif "avg_ref" in df.columns:
-        reference = df["avg_ref"].tolist()
+        reference = handle_nan_values(df["avg_ref"].to_numpy()).tolist()
 
     # Check for raw spectrum
     raw = None
     if "avg_main_raw" in df.columns:
-        raw = df["avg_main_raw"].tolist()
+        raw = handle_nan_values(df["avg_main_raw"].to_numpy()).tolist()
 
     return wavenumbers, spectrum, reference, raw
 
@@ -179,8 +221,7 @@ def baseline_reduction(y):
 def pre_process(wavenumbers, spectrum):
     w = np.asarray(wavenumbers, float).ravel()
     y = np.asarray(spectrum, float).ravel()
-    w = np.nan_to_num(w, nan=0.0)
-    y = np.nan_to_num(y, nan=0.0)
+    y = handle_nan_values(y)
     baselined, baseline = baseline_reduction(y)
 
     N = baselined.size
@@ -459,10 +500,10 @@ if st.session_state.spectra:
     fig = go.Figure()
     for item in st.session_state.spectra:
         k = item["key"]; name = item["name"]
-        wn_raw = np.nan_to_num(item["wn"], nan=0.0)
-        y_raw = np.nan_to_num(item["y"], nan=0.0)
-        ref_raw = np.nan_to_num(item.get("ref"), nan=0.0) if item.get("ref") is not None else None
-        raw_raw = np.nan_to_num(item.get("raw"), nan=0.0) if item.get("raw") is not None else None
+        wn_raw = np.asarray(item["wn"], float)
+        y_raw = handle_nan_values(np.asarray(item["y"], float))
+        ref_raw = handle_nan_values(np.asarray(item.get("ref"), float)) if item.get("ref") is not None else None
+        raw_raw = handle_nan_values(np.asarray(item.get("raw"), float)) if item.get("raw") is not None else None
         color = st.session_state.color_map.get(k, "#1f77b4")
 
         # Raw
