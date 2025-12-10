@@ -179,6 +179,8 @@ def baseline_reduction(y):
 def pre_process(wavenumbers, spectrum):
     w = np.asarray(wavenumbers, float).ravel()
     y = np.asarray(spectrum, float).ravel()
+    w = np.nan_to_num(w, nan=0.0)
+    y = np.nan_to_num(y, nan=0.0)
     baselined, baseline = baseline_reduction(y)
 
     N = baselined.size
@@ -457,7 +459,10 @@ if st.session_state.spectra:
     fig = go.Figure()
     for item in st.session_state.spectra:
         k = item["key"]; name = item["name"]
-        wn_raw = item["wn"]; y_raw = item["y"]; ref_raw = item.get("ref"); raw_raw = item.get("raw")
+        wn_raw = np.nan_to_num(item["wn"], nan=0.0)
+        y_raw = np.nan_to_num(item["y"], nan=0.0)
+        ref_raw = np.nan_to_num(item.get("ref"), nan=0.0) if item.get("ref") is not None else None
+        raw_raw = np.nan_to_num(item.get("raw"), nan=0.0) if item.get("raw") is not None else None
         color = st.session_state.color_map.get(k, "#1f77b4")
 
         # Raw
