@@ -12,13 +12,47 @@ from scipy.signal import savgol_filter, find_peaks, peak_prominences
 # ==============================
 # Tunables
 # ==============================
-WINDOW_SIZE = 7
+WINDOW_SIZE = 19
 POLYNOM_ORDER = 3
 PALETTE = pc.qualitative.Plotly + pc.qualitative.D3 + pc.qualitative.Set3  # stable per-file colors
 
 # ==============================
 from typing import Tuple, Union, Optional
 from pathlib import Path
+
+def filter_by_xrange(wn, y, ref=None, raw=None):
+    """
+    Filter data to only include points within the selected x-axis range.
+
+    Args:
+        wn: wavenumbers array
+        y: spectrum array
+        ref: reference spectrum array (optional)
+        raw: raw spectrum array (optional)
+
+    Returns:
+        filtered_wn, filtered_y, filtered_ref, filtered_raw
+    """
+    if not st.session_state.use_custom_xrange or st.session_state.xaxis_min is None or st.session_state.xaxis_max is None:
+        # No filtering needed
+        return wn, y, ref, raw
+
+    # Create mask for points within the selected range
+    mask = (wn >= st.session_state.xaxis_min) & (wn <= st.session_state.xaxis_max)
+
+    # Apply mask to all arrays
+    filtered_wn = wn[mask] if len(wn) > 0 else wn
+    filtered_y = y[mask] if len(y) > 0 else y
+
+    filtered_ref = None
+    if ref is not None and len(ref) > 0:
+        filtered_ref = ref[mask]
+
+    filtered_raw = None
+    if raw is not None and len(raw) > 0:
+        filtered_raw = raw[mask]
+
+    return filtered_wn, filtered_y, filtered_ref, filtered_raw
 
 def handle_nan_values(spectrum):
     """
@@ -191,9 +225,11 @@ def load_data(spectrum_file):
 # ==============================
 # Baseline reduction (ALS)
 # ==============================
-def build_baselined_csv(wn_raw, y_raw) -> str:
-    # Compute processed spectrum
-    wn_pp, y_pp, _ = pre_process(wn_raw, y_raw)
+def build_baselined_csv(wn_raw, y_raw, ref=None) -> str:
+    # Compute processed spectrum (use session state for preprocessing flags)
+    apply_wn = st.session_state.get("apply_wn_correction", False)
+    apply_ref = st.session_state.get("apply_ref_normalization", False)
+    wn_pp, y_pp, _, _, _ = pre_process(wn_raw, y_raw, ref=ref, apply_wn_correction=apply_wn, apply_ref_norm=apply_ref)
     # Save in the same schema you read: wavelength/value (lowercase)
     df = pd.DataFrame({"wavelength": wn_pp, "value": y_pp})
     return df.to_csv(index=False)
@@ -218,11 +254,104 @@ def baseline_reduction(y):
     baselined = y - baseline
     return baselined, baseline
 
-def pre_process(wavenumbers, spectrum):
+# ==============================
+# Wavenumber Correction & Reference Normalization
+# ==============================
+def estimate_shift_of_wavenumbers(
+    wavenumbers: np.ndarray,
+    ref_spectrum: np.ndarray,
+    expected_cm: float = 1001,
+    window: float = 50.0,
+) -> float:
+    """
+    Estimate Raman-shift correction from a known reference peak.
+    """
+    wavenumbers = np.asarray(wavenumbers)
+    ref_spectrum = np.asarray(ref_spectrum)
+
+    if wavenumbers.size == 0 or ref_spectrum.size == 0:
+        return 0.0
+
+    # select a search window around the expected reference peak
+    mask = (wavenumbers >= expected_cm - window) & (wavenumbers <= expected_cm + window)
+    if not np.any(mask):
+        return 0.0
+
+    w_band = wavenumbers[mask]
+    y_band = ref_spectrum[mask]
+
+    if y_band.size == 0 or np.all(y_band <= 0):
+        return 0.0
+
+    # Find the index of the maximum intensity inside the window - to fix it by to 1001
+    idx_max = int(np.argmax(y_band))
+    measured_cm = float(w_band[idx_max])  # which wavenumber is the max value?
+    return measured_cm - float(expected_cm)  # the correction in wn we need to apply to align the spectrum
+
+
+def wavenumber_correction_by_reference(ref, wavenumbers):
+    """Apply wavenumber correction based on reference peak at 1001 cm⁻¹."""
+    shift = estimate_shift_of_wavenumbers(
+        wavenumbers, ref, expected_cm=1001.0, window=50.0
+    )
+    return wavenumbers - shift, shift
+
+
+def reference_normalization(main, ref, wavenumbers, low_norm_area=960, high_norm_area=1070):
+    """
+    Normalize main spectrum by reference spectrum intensity in the 960-1070 cm⁻¹ region.
+    """
+    start_index = int(np.argmin(np.abs(wavenumbers - low_norm_area)))
+    end_index = int(np.argmin(np.abs(wavenumbers - high_norm_area)))
+    if end_index < start_index:
+        start_index, end_index = end_index, start_index
+
+    # Use max of reference spectrum in the normalization region as scalar factor
+    scalar_factor = np.max(ref[start_index : end_index + 1])
+
+    if scalar_factor == 0:
+        return main  # Skip normalization if reference intensity is zero
+
+    return main / scalar_factor
+
+
+# ==============================
+# Pre-processing pipeline
+# ==============================
+def pre_process(wavenumbers, spectrum, ref=None, apply_wn_correction=False, apply_ref_norm=False):
+    """
+    Pre-process spectrum with optional wavenumber correction and reference normalization.
+    
+    Order: NaN handling → WN correction → Baseline → Ref normalization → Smoothing
+    
+    Returns: (wavenumbers, smoothed_spectrum, baseline, wn_shift, before_ref_norm)
+        - before_ref_norm: spectrum after baseline but before ref normalization (None if ref_norm not applied)
+    """
     w = np.asarray(wavenumbers, float).ravel()
     y = np.asarray(spectrum, float).ravel()
     y = handle_nan_values(y)
+    
+    # Handle reference spectrum
+    ref_processed = None
+    if ref is not None:
+        ref_processed = handle_nan_values(np.asarray(ref, float).ravel())
+    
+    # Step 1: Wavenumber correction (if enabled and ref available)
+    wn_shift = 0.0
+    if apply_wn_correction and ref_processed is not None:
+        w, wn_shift = wavenumber_correction_by_reference(ref_processed, w)
+    
+    # Step 2: Baseline reduction
     baselined, baseline = baseline_reduction(y)
+    
+    # Step 3: Reference normalization (if enabled and ref available)
+    before_ref_norm = None
+    if apply_ref_norm and ref_processed is not None:
+        # Save spectrum before ref normalization for comparison
+        before_ref_norm = baselined.copy()
+        # Also baseline the reference for proper normalization
+        ref_baselined, _ = baseline_reduction(ref_processed)
+        baselined = reference_normalization(baselined, ref_baselined, w)
 
     N = baselined.size
     # Use configurable Savitzky-Golay parameters
@@ -231,7 +360,7 @@ def pre_process(wavenumbers, spectrum):
     poly = min(st.session_state.savgol_polyorder, win - 1)  # Ensure poly < win
 
     smooth = savgol_filter(baselined, window_length=win, polyorder=poly, mode="interp")
-    return w, smooth, baseline
+    return w, smooth, baseline, wn_shift, before_ref_norm
 
 # ==============================
 # Peaks
@@ -377,9 +506,21 @@ if "show_reference" not in st.session_state:
 if "show_raw" not in st.session_state:
     st.session_state.show_raw = False
 if "savgol_window" not in st.session_state:
-    st.session_state.savgol_window = 7
+    st.session_state.savgol_window = WINDOW_SIZE
 if "savgol_polyorder" not in st.session_state:
-    st.session_state.savgol_polyorder = 3
+    st.session_state.savgol_polyorder = POLYNOM_ORDER
+if "apply_wn_correction" not in st.session_state:
+    st.session_state.apply_wn_correction = False
+if "apply_ref_normalization" not in st.session_state:
+    st.session_state.apply_ref_normalization = False
+if "show_before_ref_norm" not in st.session_state:
+    st.session_state.show_before_ref_norm = False
+if "xaxis_min" not in st.session_state:
+    st.session_state.xaxis_min = None  # Will be auto-calculated
+if "xaxis_max" not in st.session_state:
+    st.session_state.xaxis_max = None  # Will be auto-calculated
+if "use_custom_xrange" not in st.session_state:
+    st.session_state.use_custom_xrange = False
 if "pending_remove" not in st.session_state:
     st.session_state.pending_remove = None
 if "uploader_version" not in st.session_state:
@@ -402,6 +543,41 @@ with st.expander("Display options", expanded=True):
     show_ref_checkbox = st.checkbox("Show reference spectrum", key="show_reference", value=st.session_state.get("show_reference", False))
     show_raw_checkbox = st.checkbox("Show raw spectrum", key="show_raw", value=st.session_state.get("show_raw", False))
 
+    # X-axis range selection
+    use_custom_range = st.checkbox("Use custom x-axis range", key="use_custom_xrange", value=st.session_state.get("use_custom_xrange", False))
+
+    if use_custom_range and st.session_state.spectra:
+        # Calculate min/max from all loaded spectra
+        all_wn = []
+        for item in st.session_state.spectra:
+            all_wn.extend(item["wn"])
+        if all_wn:
+            global_min = float(np.min(all_wn))
+            global_max = float(np.max(all_wn))
+
+            # Default to full spectrum range, clamp user values to valid bounds
+            current_min = st.session_state.xaxis_min if st.session_state.xaxis_min is not None else global_min
+            current_max = st.session_state.xaxis_max if st.session_state.xaxis_max is not None else global_max
+            
+            # Clamp to spectrum bounds
+            current_min = max(global_min, min(current_min, global_max))
+            current_max = max(global_min, min(current_max, global_max))
+
+            # Use range slider for intuitive region selection
+            st.session_state.xaxis_min, st.session_state.xaxis_max = st.slider(
+                "Select x-axis range (cm⁻¹)",
+                min_value=global_min,
+                max_value=global_max,
+                value=(current_min, current_max),
+                step=0.1,
+                format="%.1f"
+            )
+    
+    st.markdown("**Reference-based preprocessing:**")
+    wn_correction_checkbox = st.checkbox("Apply wavenumber correction (requires reference)", key="apply_wn_correction", value=st.session_state.get("apply_wn_correction", False))
+    ref_norm_checkbox = st.checkbox("Apply reference normalization (requires reference)", key="apply_ref_normalization", value=st.session_state.get("apply_ref_normalization", False))
+    show_before_ref_norm_checkbox = st.checkbox("Show spectrum before ref normalization", key="show_before_ref_norm", value=st.session_state.get("show_before_ref_norm", False), disabled=not ref_norm_checkbox)
+
     # Note about reference availability
     if show_ref_checkbox and st.session_state.spectra:
         has_reference = any(item.get("ref") is not None for item in st.session_state.spectra)
@@ -413,6 +589,12 @@ with st.expander("Display options", expanded=True):
         has_raw = any(item.get("raw") is not None for item in st.session_state.spectra)
         if not has_raw:
             st.caption("⚠️ Raw does not exist in the loaded files")
+
+    # Note about reference availability for WN correction and ref normalization
+    if (wn_correction_checkbox or ref_norm_checkbox) and st.session_state.spectra:
+        has_reference = any(item.get("ref") is not None for item in st.session_state.spectra)
+        if not has_reference:
+            st.caption("⚠️ Reference spectrum required for wavenumber correction and reference normalization")
 
 
 with st.expander("Processing settings"):
@@ -497,7 +679,7 @@ if st.session_state.spectra:
                 base, _ = os.path.splitext(name)
                 out_name = f"{base}_baselined.csv"
                 try:
-                    csv_str = build_baselined_csv(item["wn"], item["y"])
+                    csv_str = build_baselined_csv(item["wn"], item["y"], ref=item.get("ref"))
                     st.download_button(
                         "Save baselined CSV",
                         data=csv_str,
@@ -520,32 +702,41 @@ if st.session_state.spectra:
         raw_raw = handle_nan_values(np.asarray(item.get("raw"), float)) if item.get("raw") is not None else None
         color = st.session_state.color_map.get(k, "#1f77b4")
 
+        # Apply x-axis range filtering to all data
+        wn_filtered, y_filtered, ref_filtered, raw_filtered = filter_by_xrange(wn_raw, y_raw, ref_raw, raw_raw)
+
         # Raw
         if st.session_state.show_raw_traces:
             fig.add_trace(go.Scatter(
-                x=wn_raw, y=y_raw, name=name, mode="lines",
+                x=wn_filtered, y=y_filtered, name=name, mode="lines",
                 line=dict(color=color, width=2), opacity=1.0
             ))
 
         # Reference spectrum
-        if st.session_state.show_reference and ref_raw is not None:
+        if st.session_state.show_reference and ref_filtered is not None:
             fig.add_trace(go.Scatter(
-                x=wn_raw, y=ref_raw, name=f"{name} • Reference", mode="lines",
+                x=wn_filtered, y=ref_filtered, name=f"{name} • Reference", mode="lines",
                 line=dict(color=color, dash="dot", width=2), opacity=0.8
             ))
 
         # Raw spectrum
-        if st.session_state.show_raw and raw_raw is not None:
+        if st.session_state.show_raw and raw_filtered is not None:
             fig.add_trace(go.Scatter(
-                x=wn_raw, y=raw_raw, name=f"{name} • Raw", mode="lines",
+                x=wn_filtered, y=raw_filtered, name=f"{name} • Raw", mode="lines",
                 line=dict(color=color, dash="dashdot", width=2), opacity=0.7
             ))
 
         # Compute processed if needed
-        need_proc = st.session_state.show_baselined_traces or st.session_state.show_baseline_traces or st.session_state.show_peaks
-        wn_pp = y_pp = baseline = None
+        need_proc = st.session_state.show_baselined_traces or st.session_state.show_baseline_traces or st.session_state.show_peaks or st.session_state.show_before_ref_norm
+        wn_pp = y_pp = baseline = before_ref_norm = None
+        wn_shift = 0.0
         if need_proc:
-            wn_pp, y_pp, baseline = pre_process(wn_raw, y_raw)
+            wn_pp, y_pp, baseline, wn_shift, before_ref_norm = pre_process(
+                wn_filtered, y_filtered,
+                ref=ref_filtered,
+                apply_wn_correction=st.session_state.apply_wn_correction,
+                apply_ref_norm=st.session_state.apply_ref_normalization
+            )
 
         # Baselined (lighter)
         if st.session_state.show_baselined_traces and y_pp is not None:
@@ -573,16 +764,22 @@ if st.session_state.spectra:
 
         # Compute savgol smoothing if needed
         if st.session_state.perform_savgol and not st.session_state.show_baselined_traces:
-            N_raw = len(y_raw)
+            N_raw = len(y_filtered)
             win_raw = min(st.session_state.savgol_window, N_raw if N_raw % 2 == 1 else N_raw - 1)
             win_raw = max(3, win_raw)
             poly_raw = min(st.session_state.savgol_polyorder, win_raw - 1)
-            smooth_spectrum = savgol_filter(y_raw, win_raw, poly_raw)
+            smooth_spectrum = savgol_filter(y_filtered, win_raw, poly_raw)
             fig.add_trace(go.Scatter(
-                x=wn_raw, y=smooth_spectrum, name=f"{name} • Smoothed", mode="lines",
+                x=wn_filtered, y=smooth_spectrum, name=f"{name} • Smoothed", mode="lines",
                 line=dict(color=color, width=2), opacity=0.75
             ))
 
+        # Spectrum before reference normalization (for comparison)
+        if st.session_state.show_before_ref_norm and before_ref_norm is not None:
+            fig.add_trace(go.Scatter(
+                x=wn_pp, y=before_ref_norm, name=f"{name} • Before Ref Norm", mode="lines",
+                line=dict(color=color, dash="dot", width=2), opacity=0.6
+            ))
 
         # Baseline (dashed)
         if st.session_state.show_baseline_traces and baseline is not None:
@@ -604,14 +801,20 @@ if st.session_state.spectra:
                     hovertemplate="Wavenumber: %{x:.2f} cm⁻¹<br>Intensity: %{y:.2f}<extra></extra>"
                 ))
 
-    fig.update_layout(
-        height=700,
-        xaxis_title="Wavenumber (cm⁻¹)",
-        yaxis_title="Intensity",
-        legend_title="Series",
-        hovermode="x unified",
-        margin=dict(l=40, r=20, t=40, b=40)
-    )
+    # Configure x-axis range
+    layout_kwargs = {
+        "height": 700,
+        "xaxis_title": "Wavenumber (cm⁻¹)",
+        "yaxis_title": "Intensity",
+        "legend_title": "Series",
+        "hovermode": "x unified",
+        "margin": dict(l=40, r=20, t=40, b=40)
+    }
+
+    if st.session_state.use_custom_xrange and st.session_state.xaxis_min is not None and st.session_state.xaxis_max is not None:
+        layout_kwargs["xaxis_range"] = [st.session_state.xaxis_min, st.session_state.xaxis_max]
+
+    fig.update_layout(**layout_kwargs)
     st.plotly_chart(fig, use_container_width=True)
 
     if errors:
