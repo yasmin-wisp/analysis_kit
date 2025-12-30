@@ -555,23 +555,37 @@ with st.expander("Display options", expanded=True):
             global_min = float(np.min(all_wn))
             global_max = float(np.max(all_wn))
 
-            # Default to full spectrum range, clamp user values to valid bounds
+            # Default to full spectrum range
             current_min = st.session_state.xaxis_min if st.session_state.xaxis_min is not None else global_min
             current_max = st.session_state.xaxis_max if st.session_state.xaxis_max is not None else global_max
-            
-            # Clamp to spectrum bounds
-            current_min = max(global_min, min(current_min, global_max))
-            current_max = max(global_min, min(current_max, global_max))
 
-            # Use range slider for intuitive region selection
-            st.session_state.xaxis_min, st.session_state.xaxis_max = st.slider(
-                "Select x-axis range (cm⁻¹)",
-                min_value=global_min,
-                max_value=global_max,
-                value=(current_min, current_max),
-                step=0.1,
-                format="%.1f"
-            )
+            # Number inputs for precise control
+            col_min, col_max = st.columns(2)
+            with col_min:
+                new_min = st.number_input(
+                    "X-axis min (cm⁻¹)",
+                    value=float(current_min),
+                    step=1.0,
+                    format="%.1f",
+                    key="xaxis_min_input"
+                )
+            with col_max:
+                new_max = st.number_input(
+                    "X-axis max (cm⁻¹)",
+                    value=float(current_max),
+                    step=1.0,
+                    format="%.1f",
+                    key="xaxis_max_input"
+                )
+            
+            # Ensure min < max and update session state
+            if new_min < new_max:
+                st.session_state.xaxis_min = new_min
+                st.session_state.xaxis_max = new_max
+            else:
+                st.warning("Min must be less than Max")
+            
+            st.caption(f"Data range: {global_min:.1f} – {global_max:.1f} cm⁻¹")
     
     st.markdown("**Reference-based preprocessing:**")
     wn_correction_checkbox = st.checkbox("Apply wavenumber correction (requires reference)", key="apply_wn_correction", value=st.session_state.get("apply_wn_correction", False))
