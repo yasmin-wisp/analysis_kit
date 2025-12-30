@@ -656,6 +656,15 @@ if new_files:
 # --- list & remove controls ---
 if st.session_state.spectra:
     with st.expander("Loaded spectra", expanded=True):
+        # Clear All button
+        if st.button("🗑️ Clear All", help="Remove all loaded spectra (keeps display settings)", use_container_width=False):
+            st.session_state.spectra = []
+            st.session_state.color_map = {}
+            st.session_state.palette_idx = 0
+            st.session_state.uploader_version += 1
+            st.rerun()
+        
+        st.markdown("---")
         for item in list(st.session_state.spectra):
             k = item["key"]; name = item["name"]
             npts = int(item["wn"].size)
