@@ -8,6 +8,7 @@ import plotly.colors as pc
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 from scipy.signal import savgol_filter, find_peaks, peak_prominences
+from scipy.integrate import trapezoid
 
 # ==============================
 # Tunables
@@ -390,6 +391,41 @@ def detect_peaks(x, y, max_peaks=10, prom_ratio=0.02):
     return x[idxs], y[idxs]
 
 # ==============================
+# AUC calculation
+# ==============================
+def calculate_auc_in_region(
+    spectrum: np.ndarray,
+    wavenumbers: np.ndarray,
+    wn_min: float,
+    wn_max: float,
+    use_linear_baseline: bool = True,
+) -> float:
+    mask = (wavenumbers >= wn_min) & (wavenumbers <= wn_max)
+    if not np.any(mask):
+        return 0.0
+
+    wn_region = wavenumbers[mask]
+    spectrum_region = spectrum[mask]
+
+    sort_idx = np.argsort(wn_region)
+    wn_sorted = wn_region[sort_idx]
+    spectrum_sorted = spectrum_region[sort_idx]
+
+    if use_linear_baseline and len(wn_sorted) > 1:
+        x0, x1 = wn_sorted[0], wn_sorted[-1]
+        y0, y1 = spectrum_sorted[0], spectrum_sorted[-1]
+        if x1 != x0:
+            linear_baseline = y0 + (y1 - y0) * (wn_sorted - x0) / (x1 - x0)
+            spectrum_corrected = np.maximum(spectrum_sorted - linear_baseline, 0)
+            auc = trapezoid(spectrum_corrected, wn_sorted)
+        else:
+            auc = 0.0
+    else:
+        auc = trapezoid(spectrum_sorted, wn_sorted)
+
+    return auc
+
+# ==============================
 # I/O helpers
 # ==============================
 # def load_data_old(file_like_or_path):
@@ -525,6 +561,18 @@ if "pending_remove" not in st.session_state:
     st.session_state.pending_remove = None
 if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0   # increment to reset the file_uploader widget
+if "show_auc_plot" not in st.session_state:
+    st.session_state.show_auc_plot = False
+if "auc_spectrum_wn_min" not in st.session_state:
+    st.session_state.auc_spectrum_wn_min = 835.0
+if "auc_spectrum_wn_max" not in st.session_state:
+    st.session_state.auc_spectrum_wn_max = 911.0
+if "auc_ref_wn_min" not in st.session_state:
+    st.session_state.auc_ref_wn_min = 960.0
+if "auc_ref_wn_max" not in st.session_state:
+    st.session_state.auc_ref_wn_max = 1070.0
+if "auc_linear_baseline" not in st.session_state:
+    st.session_state.auc_linear_baseline = True
 
 st.write(
     "Upload TSV or CSVs with columns **`wavelength`** or **`Wavelength`** or **`raman_shift_cm-1`** AND **`value`** or **`RamanIntensity`** or **`avg_main`**. \n"
@@ -542,6 +590,7 @@ with st.expander("Display options", expanded=True):
     st.checkbox("Apply Min-Max normalization (after baseline)", key="perform_minmax_normalization", value=st.session_state.get("perform_minmax_normalization", False))
     show_ref_checkbox = st.checkbox("Show reference spectrum", key="show_reference", value=st.session_state.get("show_reference", False))
     show_raw_checkbox = st.checkbox("Show raw spectrum", key="show_raw", value=st.session_state.get("show_raw", False))
+    st.checkbox("Show AUC comparison plot", key="show_auc_plot", value=st.session_state.get("show_auc_plot", False))
 
     # X-axis range selection
     use_custom_range = st.checkbox("Use custom x-axis range", key="use_custom_xrange", value=st.session_state.get("use_custom_xrange", False))
@@ -628,6 +677,39 @@ with st.expander("Processing settings"):
         help="Polynomial order for Savitzky-Golay smoothing. Must be < window length."
     )
 
+with st.expander("AUC settings"):
+    st.markdown("**Spectrum region (cm⁻¹):**")
+    auc_s_col1, auc_s_col2 = st.columns(2)
+    with auc_s_col1:
+        st.session_state.auc_spectrum_wn_min = st.number_input(
+            "Spectrum WN min", value=st.session_state.auc_spectrum_wn_min,
+            step=1.0, format="%.1f", key="auc_spec_min_input",
+        )
+    with auc_s_col2:
+        st.session_state.auc_spectrum_wn_max = st.number_input(
+            "Spectrum WN max", value=st.session_state.auc_spectrum_wn_max,
+            step=1.0, format="%.1f", key="auc_spec_max_input",
+        )
+
+    st.markdown("**Reference region (cm⁻¹):**")
+    auc_r_col1, auc_r_col2 = st.columns(2)
+    with auc_r_col1:
+        st.session_state.auc_ref_wn_min = st.number_input(
+            "Reference WN min", value=st.session_state.auc_ref_wn_min,
+            step=1.0, format="%.1f", key="auc_ref_min_input",
+        )
+    with auc_r_col2:
+        st.session_state.auc_ref_wn_max = st.number_input(
+            "Reference WN max", value=st.session_state.auc_ref_wn_max,
+            step=1.0, format="%.1f", key="auc_ref_max_input",
+        )
+
+    st.session_state.auc_linear_baseline = st.checkbox(
+        "Use linear baseline subtraction",
+        value=st.session_state.auc_linear_baseline,
+        key="auc_linear_bl_input",
+    )
+
 st.markdown("---")
 
 # --- APPLY PENDING REMOVAL EARLY (and reset uploader) ---
@@ -667,17 +749,94 @@ if new_files:
         except Exception as e:
             errors.append(f"{getattr(uf, 'name', 'Spectrum')}: {e}")
 
+# --- precompute processed spectra once (used by plot + AUC) ---
+processed_cache = {}
+if st.session_state.spectra:
+    for item in st.session_state.spectra:
+        k = item["key"]
+        wn_raw = np.asarray(item["wn"], float)
+        y_raw = handle_nan_values(np.asarray(item["y"], float))
+        ref_raw = handle_nan_values(np.asarray(item.get("ref"), float)) if item.get("ref") is not None else None
+        raw_raw = handle_nan_values(np.asarray(item.get("raw"), float)) if item.get("raw") is not None else None
+
+        wn_filtered, y_filtered, ref_filtered, raw_filtered = filter_by_xrange(wn_raw, y_raw, ref_raw, raw_raw)
+
+        wn_pp, y_pp, baseline, wn_shift, before_ref_norm = pre_process(
+            wn_filtered, y_filtered,
+            ref=ref_filtered,
+            apply_wn_correction=st.session_state.apply_wn_correction,
+            apply_ref_norm=st.session_state.apply_ref_normalization,
+        )
+
+        y_final = y_pp.copy()
+        if st.session_state.perform_minmax_normalization:
+            y_min, y_max = np.min(y_final), np.max(y_final)
+            if y_max > y_min:
+                y_final = (y_final - y_min) / (y_max - y_min)
+        if st.session_state.perform_savgol:
+            N = len(y_final)
+            win = min(st.session_state.savgol_window, N if N % 2 == 1 else N - 1)
+            win = max(3, win)
+            poly = min(st.session_state.savgol_polyorder, win - 1)
+            y_final = savgol_filter(y_final, win, poly)
+
+        processed_cache[k] = {
+            "wn_pp": wn_pp, "y_final": y_final, "y_pp": y_pp,
+            "baseline": baseline, "before_ref_norm": before_ref_norm,
+            "wn_filtered": wn_filtered, "y_filtered": y_filtered,
+            "ref_filtered": ref_filtered, "raw_filtered": raw_filtered,
+        }
+
 # --- list & remove controls ---
 if st.session_state.spectra:
     with st.expander("Loaded spectra", expanded=True):
-        # Clear All button
-        if st.button("🗑️ Clear All", help="Remove all loaded spectra (keeps display settings)", use_container_width=False):
-            st.session_state.spectra = []
-            st.session_state.color_map = {}
-            st.session_state.palette_idx = 0
-            st.session_state.uploader_version += 1
-            st.rerun()
-        
+        # Clear All + Export AUC buttons
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            if st.button("🗑️ Clear All", help="Remove all loaded spectra (keeps display settings)", use_container_width=True):
+                st.session_state.spectra = []
+                st.session_state.color_map = {}
+                st.session_state.palette_idx = 0
+                st.session_state.uploader_version += 1
+                st.rerun()
+        with btn_col2:
+            auc_rows = []
+            for item in st.session_state.spectra:
+                pc_item = processed_cache.get(item["key"])
+                if pc_item is None:
+                    continue
+                spec_auc = calculate_auc_in_region(
+                    pc_item["y_final"], pc_item["wn_pp"],
+                    st.session_state.auc_spectrum_wn_min,
+                    st.session_state.auc_spectrum_wn_max,
+                    st.session_state.auc_linear_baseline,
+                )
+                ref_auc = (
+                    calculate_auc_in_region(
+                        pc_item["ref_filtered"], pc_item["wn_pp"],
+                        st.session_state.auc_ref_wn_min,
+                        st.session_state.auc_ref_wn_max,
+                        st.session_state.auc_linear_baseline,
+                    )
+                    if pc_item["ref_filtered"] is not None
+                    else 0.0
+                )
+                auc_rows.append({
+                    "file_name": item["name"],
+                    "spectrum_auc": spec_auc,
+                    "reference_auc": ref_auc,
+                })
+
+            auc_csv = pd.DataFrame(auc_rows).to_csv(index=False)
+            st.download_button(
+                "📐 Export AUC",
+                data=auc_csv,
+                file_name="auc_export.csv",
+                mime="text/csv",
+                use_container_width=True,
+                help="Export AUC values for all loaded spectra (see AUC settings)",
+            )
+
         st.markdown("---")
         for item in list(st.session_state.spectra):
             k = item["key"]; name = item["name"]
@@ -719,14 +878,17 @@ if st.session_state.spectra:
     fig = go.Figure()
     for item in st.session_state.spectra:
         k = item["key"]; name = item["name"]
-        wn_raw = np.asarray(item["wn"], float)
-        y_raw = handle_nan_values(np.asarray(item["y"], float))
-        ref_raw = handle_nan_values(np.asarray(item.get("ref"), float)) if item.get("ref") is not None else None
-        raw_raw = handle_nan_values(np.asarray(item.get("raw"), float)) if item.get("raw") is not None else None
         color = st.session_state.color_map.get(k, "#1f77b4")
-
-        # Apply x-axis range filtering to all data
-        wn_filtered, y_filtered, ref_filtered, raw_filtered = filter_by_xrange(wn_raw, y_raw, ref_raw, raw_raw)
+        pc_item = processed_cache[k]
+        wn_filtered = pc_item["wn_filtered"]
+        y_filtered = pc_item["y_filtered"]
+        ref_filtered = pc_item["ref_filtered"]
+        raw_filtered = pc_item["raw_filtered"]
+        wn_pp = pc_item["wn_pp"]
+        y_pp = pc_item["y_pp"]
+        y_final = pc_item["y_final"]
+        baseline = pc_item["baseline"]
+        before_ref_norm = pc_item["before_ref_norm"]
 
         # Raw
         if st.session_state.show_raw_traces:
@@ -749,43 +911,18 @@ if st.session_state.spectra:
                 line=dict(color=color, dash="dashdot", width=2), opacity=0.7
             ))
 
-        # Compute processed if needed
-        need_proc = st.session_state.show_baselined_traces or st.session_state.show_baseline_traces or st.session_state.show_peaks or st.session_state.show_before_ref_norm
-        wn_pp = y_pp = baseline = before_ref_norm = None
-        wn_shift = 0.0
-        if need_proc:
-            wn_pp, y_pp, baseline, wn_shift, before_ref_norm = pre_process(
-                wn_filtered, y_filtered,
-                ref=ref_filtered,
-                apply_wn_correction=st.session_state.apply_wn_correction,
-                apply_ref_norm=st.session_state.apply_ref_normalization
-            )
-
         # Baselined (lighter)
-        if st.session_state.show_baselined_traces and y_pp is not None:
-            # Normalization
-            if st.session_state.perform_minmax_normalization:
-                y_min = np.min(y_pp)
-                y_max = np.max(y_pp)
-                if y_max > y_min:
-                    y_pp = (y_pp - y_min) / (y_max - y_min)
+        if st.session_state.show_baselined_traces:
+            label = f"{name} • Baseline-Reduced"
             if st.session_state.perform_savgol:
-                N_pp = len(y_pp)
-                win_pp = min(st.session_state.savgol_window, N_pp if N_pp % 2 == 1 else N_pp - 1)
-                win_pp = max(3, win_pp)
-                poly_pp = min(st.session_state.savgol_polyorder, win_pp - 1)
-                smooth_baselined_spectrum = savgol_filter(y_pp, win_pp, poly_pp)
-                fig.add_trace(go.Scatter(
-                    x=wn_pp, y=smooth_baselined_spectrum, name=f"{name} • Baseline-Reduced (Smoothed)", mode="lines",
-                    line=dict(color=color, width=2), opacity=0.75
-                ))
-            else:
-                fig.add_trace(go.Scatter(
-                    x=wn_pp, y=y_pp, name=f"{name} • Baseline-Reduced", mode="lines",
-                    line=dict(color=color, width=2), opacity=0.55
-                ))
+                label += " (Smoothed)"
+            fig.add_trace(go.Scatter(
+                x=wn_pp, y=y_final, name=label, mode="lines",
+                line=dict(color=color, width=2),
+                opacity=0.75 if st.session_state.perform_savgol else 0.55,
+            ))
 
-        # Compute savgol smoothing if needed
+        # Savgol on raw (only when baselined trace is not shown)
         if st.session_state.perform_savgol and not st.session_state.show_baselined_traces:
             N_raw = len(y_filtered)
             win_raw = min(st.session_state.savgol_window, N_raw if N_raw % 2 == 1 else N_raw - 1)
@@ -812,8 +949,8 @@ if st.session_state.spectra:
             ))
 
         # Peaks (X)
-        if st.session_state.show_peaks and y_pp is not None:
-            px, py = detect_peaks(wn_pp, y_pp,
+        if st.session_state.show_peaks and y_final is not None:
+            px, py = detect_peaks(wn_pp, y_final,
                                   max_peaks=st.session_state.peaks_max,
                                   prom_ratio=st.session_state.peaks_prom_ratio)
             if px.size > 0:
@@ -839,6 +976,56 @@ if st.session_state.spectra:
 
     fig.update_layout(**layout_kwargs)
     st.plotly_chart(fig, use_container_width=True)
+
+    # --- AUC comparison plot ---
+    if st.session_state.show_auc_plot:
+        file_names = []
+        spec_aucs = []
+        ref_aucs = []
+        for item in st.session_state.spectra:
+            pc_item = processed_cache.get(item["key"])
+            if pc_item is None:
+                continue
+            spec_aucs.append(calculate_auc_in_region(
+                pc_item["y_final"], pc_item["wn_pp"],
+                st.session_state.auc_spectrum_wn_min,
+                st.session_state.auc_spectrum_wn_max,
+                st.session_state.auc_linear_baseline,
+            ))
+            ref_aucs.append(
+                calculate_auc_in_region(
+                    pc_item["ref_filtered"], pc_item["wn_pp"],
+                    st.session_state.auc_ref_wn_min,
+                    st.session_state.auc_ref_wn_max,
+                    st.session_state.auc_linear_baseline,
+                ) if pc_item["ref_filtered"] is not None else 0.0
+            )
+            file_names.append(item["name"])
+
+        auc_fig = go.Figure()
+        auc_fig.add_trace(go.Scatter(
+            x=file_names, y=spec_aucs,
+            name=f"Spectrum AUC ({st.session_state.auc_spectrum_wn_min:.0f}–{st.session_state.auc_spectrum_wn_max:.0f} cm⁻¹)",
+            mode="lines+markers",
+            line=dict(width=2),
+            marker=dict(size=8),
+        ))
+        auc_fig.add_trace(go.Scatter(
+            x=file_names, y=ref_aucs,
+            name=f"Reference AUC ({st.session_state.auc_ref_wn_min:.0f}–{st.session_state.auc_ref_wn_max:.0f} cm⁻¹)",
+            mode="lines+markers",
+            line=dict(width=2, dash="dash"),
+            marker=dict(size=8),
+        ))
+        auc_fig.update_layout(
+            height=400,
+            title="AUC Comparison",
+            xaxis_title="File",
+            yaxis_title="AUC",
+            hovermode="x unified",
+            margin=dict(l=40, r=20, t=50, b=40),
+        )
+        st.plotly_chart(auc_fig, use_container_width=True)
 
     if errors:
         st.error("One or more files failed to process:\n\n- " + "\n- ".join(errors))
