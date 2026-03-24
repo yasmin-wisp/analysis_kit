@@ -411,19 +411,22 @@ def calculate_auc_in_region(
     wn_sorted = wn_region[sort_idx]
     spectrum_sorted = spectrum_region[sort_idx]
 
+    # AUC is reported as a non-negative magnitude:
+    # - With linear baseline: integrate absolute deviation from the baseline.
+    # - Without linear baseline: take absolute value of the raw integral.
     if use_linear_baseline and len(wn_sorted) > 1:
         x0, x1 = wn_sorted[0], wn_sorted[-1]
         y0, y1 = spectrum_sorted[0], spectrum_sorted[-1]
         if x1 != x0:
             linear_baseline = y0 + (y1 - y0) * (wn_sorted - x0) / (x1 - x0)
-            spectrum_corrected = np.maximum(spectrum_sorted - linear_baseline, 0)
+            spectrum_corrected = np.abs(spectrum_sorted - linear_baseline)
             auc = trapezoid(spectrum_corrected, wn_sorted)
         else:
             auc = 0.0
     else:
         auc = trapezoid(spectrum_sorted, wn_sorted)
 
-    return auc
+    return float(abs(auc))
 
 # ==============================
 # I/O helpers
